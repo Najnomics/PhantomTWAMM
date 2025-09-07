@@ -1,0 +1,55 @@
+{
+  "name": "phantom-twamm-hook",
+  "version": "1.0.0",
+  "description": "PhantomTWAMM Hook - FHE-powered private time-weighted order execution on Uniswap v4",
+  "scripts": {
+    "test": "forge test --via-ir",
+    "test-verbose": "forge test -vvv --via-ir",
+    "build": "forge build --via-ir",
+    "coverage": "forge coverage --ir-minimum",
+    "deploy": "forge script script/DeployPhantomTWAMM.s.sol --via-ir",
+    "format": "forge fmt",
+    "clean": "forge clean",
+    "install": "pnpm install && forge install"
+  },
+  "keywords": [
+    "blockchain",
+    "ethereum", 
+    "smart-contracts",
+    "solidity",
+    "FHE",
+    "encryption",
+    "privacy",
+    "coprocessor",
+    "fhenix",
+    "cofhe",
+    "uniswap",
+    "trading",
+    "hooks",
+    "TWAMM",
+    "time-weighted",
+    "phantom",
+    "MEV-resistant"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/najnomics/PhantomTWAMM.git"
+  },
+  "author": "najnomics",
+  "license": "MIT",
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0",
+    "@openzeppelin/contracts-upgradeable": "^5.0.0",
+    "@fhenixprotocol/cofhe-contracts": "0.0.13",
+    "cofhe-foundry-mocks": "github:fhenixprotocol/cofhe-foundry-mocks",
+    "@uniswap/v4-core": "1.0.2",
+    "@uniswap/v4-periphery": "1.0.2",
+    "forge-std": "github:foundry-rs/forge-std"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "@nomicfoundation/hardhat-foundry": "^1.1.3", 
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.19"
+  }
+}
