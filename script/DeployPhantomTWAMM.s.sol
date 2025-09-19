@@ -84,8 +84,9 @@ contract DeployPhantomTWAMM is Script {
         console.log("Mining hook address with flags:", flags);
 
         // Mine hook address with correct permissions
+        address deployer = vm.addr(vm.envUint("PRIVATE_KEY"));
         (address hookAddress, bytes32 salt) =
-            HookMiner.find(address(this), flags, type(PhantomTWAMM).creationCode, abi.encode(address(poolManager)));
+            HookMiner.find(deployer, flags, type(PhantomTWAMM).creationCode, abi.encode(address(poolManager)));
 
         console.log("Mined hook address:", hookAddress);
         console.log("Salt:", Strings.toHexString(uint256(salt)));

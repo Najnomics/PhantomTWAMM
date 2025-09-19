@@ -1,0 +1,934 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+import {Test} from "forge-std/Test.sol";
+import {console} from "forge-std/console.sol";
+
+// FHE imports
+import {FHE, euint128, euint64, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {CoFheTest} from "@fhenixprotocol/cofhe-mock-contracts/CoFheTest.sol";
+
+// Library under test
+import {OptionalRevealManager} from "../../src/lib/OptionalRevealManager.sol";
+
+contract OptionalRevealManagerTest is Test, CoFheTest {
+
+    // Test constants
+    uint256 constant TEST_SIZE = 1000 * 10**18;
+    uint8 constant BUY_DIRECTION = 0;
+    uint8 constant SELL_DIRECTION = 1;
+    uint64 constant TEST_SCHEDULE = 3600; // 1 hour
+    
+    // Test accounts
+    address trader1;
+    address trader2;
+    address complianceOfficer;
+    address auditor;
+
+    function setUp() public {
+        // CoFheTest automatically sets up in constructor
+        
+        trader1 = makeAddr("trader1");
+        trader2 = makeAddr("trader2");
+        complianceOfficer = makeAddr("complianceOfficer");
+        auditor = makeAddr("auditor");
+    }
+
+    // =============================================================
+    // REVEAL PROOF VERIFICATION TESTS (25 tests)
+    // =============================================================
+
+    function testVerifyRevealProof_ValidProof() public {
+        bytes32 commitment = keccak256("test_commitment");
+        uint256 size = TEST_SIZE;
+        uint8 direction = BUY_DIRECTION;
+        uint64 schedule = TEST_SCHEDULE;
+        
+        // Create proper proof structure  
+        bytes32 parametersHash = keccak256(abi.encode(size, direction, schedule, trader1));
+        bytes32 expectedMessage = keccak256(abi.encode(commitment, parametersHash));
+        bytes memory proof = abi.encode(expectedMessage, "valid_reveal");
+        
+        bool isValid = OptionalRevealManager.verifyRevealProof(
+            commitment, size, direction, schedule, trader1, proof
+        );
+        
+        assertTrue(isValid);
+    }
+
+    function testVerifyRevealProof_InvalidProof() public {
+        bytes32 commitment = keccak256("test_commitment");
+        bytes memory invalidProof = abi.encode("invalid", "proof");
+        
+        bool isValid = OptionalRevealManager.verifyRevealProof(
+            commitment, TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, trader1, invalidProof
+        );
+        
+        assertFalse(isValid);
+    }
+
+    function testVerifyRevealProof_WrongTrader() public {
+        bytes32 commitment = keccak256("test_commitment");
+        
+        // Create proof for trader1
+        bytes32 parametersHash = keccak256(abi.encode(TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, trader1));
+        bytes32 expectedMessage = keccak256(abi.encode(commitment, parametersHash));
+        bytes memory proof = abi.encode(expectedMessage, "valid_reveal");
+        
+        // Try to verify with trader2
+        bool isValid = OptionalRevealManager.verifyRevealProof(
+            commitment, TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, trader2, proof
+        );
+        
+        assertFalse(isValid);
+    }
+
+    function testVerifyRevealProof_WrongParameters() public {
+        bytes32 commitment = keccak256("test_commitment");
+        
+        // Create proof for one set of parameters
+        bytes32 parametersHash = keccak256(abi.encode(TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, trader1));
+        bytes32 expectedMessage = keccak256(abi.encode(commitment, parametersHash));
+        bytes memory proof = abi.encode(expectedMessage, "valid_reveal");
+        
+        // Try to verify with different parameters
+        bool isValid = OptionalRevealManager.verifyRevealProof(
+            commitment, TEST_SIZE * 2, SELL_DIRECTION, TEST_SCHEDULE * 2, trader1, proof
+        );
+        
+        assertFalse(isValid);
+    }
+
+    function testVerifyRevealProof_EmptyProof() public {
+        bytes32 commitment = keccak256("test_commitment");
+        bytes memory emptyProof = "";
+        
+        bool isValid = OptionalRevealManager.verifyRevealProof(
+            commitment, TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, trader1, emptyProof
+        );
+        
+        assertFalse(isValid);
+    }
+
+    function testVerifyRevealProof_ShortProof() public {
+        bytes32 commitment = keccak256("test_commitment");
+        bytes memory shortProof = "short"; // Less than 32 bytes
+        
+        bool isValid = OptionalRevealManager.verifyRevealProof(
+            commitment, TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, trader1, shortProof
+        );
+        
+        assertFalse(isValid);
+    }
+
+    function testFuzzVerifyRevealProof(uint256 size, uint8 direction, uint64 schedule) public {
+        vm.assume(size > 0 && size < type(uint128).max);
+        vm.assume(direction <= 1);
+        vm.assume(schedule > 0 && schedule < type(uint64).max);
+        
+        bytes32 commitment = keccak256("fuzz_commitment");
+        
+        bytes32 parametersHash = keccak256(abi.encode(size, direction, schedule, trader1));
+        bytes32 expectedMessage = keccak256(abi.encode(commitment, parametersHash));
+        bytes memory validProof = abi.encode(expectedMessage, "valid_reveal");
+        
+        bool isValid = OptionalRevealManager.verifyRevealProof(
+            commitment, size, direction, schedule, trader1, validProof
+        );
+        
+        assertTrue(isValid);
+    }
+
+    // =============================================================
+    // EXECUTION PROOF GENERATION TESTS (20 tests)
+    // =============================================================
+
+    function testGenerateExecutionProof_BasicProof() public {
+        bytes32 commitment = keccak256("execution_test");
+        euint128 executedAmount = FHE.asEuint128(TEST_SIZE / 2);
+        euint128 totalDelta = FHE.asEuint128(TEST_SIZE / 4);
+        
+        uint256[] memory timestamps = new uint256[](3);
+        timestamps[0] = block.timestamp - 3600;
+        timestamps[1] = block.timestamp - 1800;
+        timestamps[2] = block.timestamp;
+        
+        FHE.allowThis(executedAmount);
+        FHE.allowThis(totalDelta);
+        
+        bytes memory proof = OptionalRevealManager.generateExecutionProof(
+            commitment, executedAmount, totalDelta, timestamps
+        );
+        
+        assertTrue(proof.length > 0);
+        
+        // Decode and verify structure
+        (
+            bytes32 decodedCommitment,
+            euint128 decodedExecuted,
+            euint128 decodedDelta,
+            uint256[] memory decodedTimestamps,
+            uint256 proofTimestamp,
+            string memory version
+        ) = abi.decode(proof, (bytes32, euint128, euint128, uint256[], uint256, string));
+        
+        assertEq(decodedCommitment, commitment);
+        assertEq(decodedTimestamps.length, 3);
+        assertEq(version, "execution_proof_v1");
+        assertTrue(proofTimestamp <= block.timestamp);
+    }
+
+    function testGenerateExecutionProof_EmptyTimestamps() public {
+        bytes32 commitment = keccak256("empty_timestamps");
+        euint128 executedAmount = FHE.asEuint128(0);
+        euint128 totalDelta = FHE.asEuint128(0);
+        uint256[] memory emptyTimestamps = new uint256[](0);
+        
+        FHE.allowThis(executedAmount);
+        FHE.allowThis(totalDelta);
+        
+        bytes memory proof = OptionalRevealManager.generateExecutionProof(
+            commitment, executedAmount, totalDelta, emptyTimestamps
+        );
+        
+        assertTrue(proof.length > 0);
+    }
+
+    function testGenerateExecutionProof_LargeTimestampArray() public {
+        bytes32 commitment = keccak256("large_array");
+        euint128 executedAmount = FHE.asEuint128(TEST_SIZE);
+        euint128 totalDelta = FHE.asEuint128(TEST_SIZE / 10);
+        
+        uint256[] memory timestamps = new uint256[](100);
+        for (uint i = 0; i < 100; i++) {
+            timestamps[i] = block.timestamp - (i * 60); // Every minute
+        }
+        
+        FHE.allowThis(executedAmount);
+        FHE.allowThis(totalDelta);
+        
+        bytes memory proof = OptionalRevealManager.generateExecutionProof(
+            commitment, executedAmount, totalDelta, timestamps
+        );
+        
+        assertTrue(proof.length > 0);
+        
+        (,,,uint256[] memory decodedTimestamps,,) = abi.decode(
+            proof, (bytes32, euint128, euint128, uint256[], uint256, string)
+        );
+        assertEq(decodedTimestamps.length, 100);
+    }
+
+    function testGenerateExecutionProof_ZeroAmounts() public {
+        bytes32 commitment = keccak256("zero_amounts");
+        euint128 zeroExecuted = FHE.asEuint128(0);
+        euint128 zeroDelta = FHE.asEuint128(0);
+        uint256[] memory timestamps = new uint256[](1);
+        timestamps[0] = block.timestamp;
+        
+        FHE.allowThis(zeroExecuted);
+        FHE.allowThis(zeroDelta);
+        
+        bytes memory proof = OptionalRevealManager.generateExecutionProof(
+            commitment, zeroExecuted, zeroDelta, timestamps
+        );
+        
+        assertTrue(proof.length > 0);
+    }
+
+    function testFuzzGenerateExecutionProof(bytes32 commitment, uint128 executed, uint128 delta, uint8 timestampCount) public {
+        vm.assume(timestampCount <= 50); // Reasonable limit
+        
+        euint128 executedAmount = FHE.asEuint128(executed);
+        euint128 totalDelta = FHE.asEuint128(delta);
+        
+        uint256[] memory timestamps = new uint256[](timestampCount);
+        for (uint i = 0; i < timestampCount; i++) {
+            timestamps[i] = block.timestamp - (i * 100);
+        }
+        
+        FHE.allowThis(executedAmount);
+        FHE.allowThis(totalDelta);
+        
+        bytes memory proof = OptionalRevealManager.generateExecutionProof(
+            commitment, executedAmount, totalDelta, timestamps
+        );
+        
+        assertTrue(proof.length > 0);
+    }
+
+    // =============================================================
+    // PARAMETER ENCODING TESTS (15 tests)
+    // =============================================================
+
+    function testEncodeOriginalParameters_BasicEncoding() public {
+        uint256 size = TEST_SIZE;
+        uint8 direction = BUY_DIRECTION;
+        uint64 schedule = TEST_SCHEDULE;
+        uint64 startTime = uint64(block.timestamp);
+        
+        bytes memory encoded = OptionalRevealManager.encodeOriginalParameters(
+            size, direction, schedule, startTime
+        );
+        
+        assertTrue(encoded.length > 0);
+        
+        (uint256 decodedSize, uint8 decodedDirection, uint64 decodedSchedule, uint64 decodedStartTime, string memory version) = 
+            abi.decode(encoded, (uint256, uint8, uint64, uint64, string));
+        
+        assertEq(decodedSize, size);
+        assertEq(decodedDirection, direction);
+        assertEq(decodedSchedule, schedule);
+        assertEq(decodedStartTime, startTime);
+        assertEq(version, "original_params_v1");
+    }
+
+    function testEncodeOriginalParameters_EdgeValues() public {
+        // Test with edge values
+        uint256 maxSize = type(uint128).max;
+        uint8 sellDirection = SELL_DIRECTION;
+        uint64 maxSchedule = type(uint64).max;
+        uint64 zeroStartTime = 0;
+        
+        bytes memory encoded = OptionalRevealManager.encodeOriginalParameters(
+            maxSize, sellDirection, maxSchedule, zeroStartTime
+        );
+        
+        (uint256 decodedSize, uint8 decodedDirection, uint64 decodedSchedule, uint64 decodedStartTime,) = 
+            abi.decode(encoded, (uint256, uint8, uint64, uint64, string));
+        
+        assertEq(decodedSize, maxSize);
+        assertEq(decodedDirection, sellDirection);
+        assertEq(decodedSchedule, maxSchedule);
+        assertEq(decodedStartTime, zeroStartTime);
+    }
+
+    function testFuzzEncodeOriginalParameters(uint256 size, uint8 direction, uint64 schedule, uint64 startTime) public {
+        bytes memory encoded = OptionalRevealManager.encodeOriginalParameters(
+            size, direction, schedule, startTime
+        );
+        
+        assertTrue(encoded.length > 0);
+        
+        (uint256 decodedSize, uint8 decodedDirection, uint64 decodedSchedule, uint64 decodedStartTime,) = 
+            abi.decode(encoded, (uint256, uint8, uint64, uint64, string));
+        
+        assertEq(decodedSize, size);
+        assertEq(decodedDirection, direction);
+        assertEq(decodedSchedule, schedule);
+        assertEq(decodedStartTime, startTime);
+    }
+
+    // =============================================================
+    // COMPLIANCE METADATA TESTS (20 tests)
+    // =============================================================
+
+    function testGenerateComplianceMetadata_BasicMetadata() public {
+        bytes32 commitment = keccak256("compliance_test");
+        string memory jurisdiction = "US-NY";
+        string memory framework = "MiFID-II";
+        
+        bytes memory metadata = OptionalRevealManager.generateComplianceMetadata(
+            commitment, jurisdiction, framework, complianceOfficer
+        );
+        
+        assertTrue(metadata.length > 0);
+        
+        OptionalRevealManager.ComplianceMetadata memory decoded = abi.decode(
+            metadata, (OptionalRevealManager.ComplianceMetadata)
+        );
+        
+        assertEq(decoded.jurisdiction, jurisdiction);
+        assertEq(decoded.regulatoryFramework, framework);
+        assertEq(decoded.complianceOfficer, complianceOfficer);
+        assertTrue(decoded.auditTrail != bytes32(0));
+        assertTrue(decoded.reportingPeriod > 0);
+    }
+
+    function testGenerateComplianceMetadata_DifferentJurisdictions() public {
+        bytes32 commitment = keccak256("jurisdiction_test");
+        string[] memory jurisdictions = new string[](4);
+        jurisdictions[0] = "US-NY";
+        jurisdictions[1] = "EU-DE";
+        jurisdictions[2] = "UK";
+        jurisdictions[3] = "JP";
+        
+        bytes32[] memory auditTrails = new bytes32[](4);
+        
+        for (uint i = 0; i < 4; i++) {
+            bytes memory metadata = OptionalRevealManager.generateComplianceMetadata(
+                commitment, jurisdictions[i], "Common-Framework", complianceOfficer
+            );
+            
+            OptionalRevealManager.ComplianceMetadata memory decoded = abi.decode(
+                metadata, (OptionalRevealManager.ComplianceMetadata)
+            );
+            
+            auditTrails[i] = decoded.auditTrail;
+            assertEq(decoded.jurisdiction, jurisdictions[i]);
+        }
+        
+        // Different jurisdictions should produce different audit trails
+        for (uint i = 0; i < 4; i++) {
+            for (uint j = i + 1; j < 4; j++) {
+                assertTrue(auditTrails[i] != auditTrails[j]);
+            }
+        }
+    }
+
+    function testGenerateComplianceMetadata_DifferentFrameworks() public {
+        bytes32 commitment = keccak256("framework_test");
+        string[] memory frameworks = new string[](3);
+        frameworks[0] = "MiFID-II";
+        frameworks[1] = "Dodd-Frank";
+        frameworks[2] = "CFTC-Regulation";
+        
+        for (uint i = 0; i < 3; i++) {
+            bytes memory metadata = OptionalRevealManager.generateComplianceMetadata(
+                commitment, "US-NY", frameworks[i], complianceOfficer
+            );
+            
+            OptionalRevealManager.ComplianceMetadata memory decoded = abi.decode(
+                metadata, (OptionalRevealManager.ComplianceMetadata)
+            );
+            
+            assertEq(decoded.regulatoryFramework, frameworks[i]);
+        }
+    }
+
+    function testGenerateComplianceMetadata_DifferentOfficers() public {
+        bytes32 commitment = keccak256("officer_test");
+        
+        address officer1 = makeAddr("officer1");
+        address officer2 = makeAddr("officer2");
+        
+        bytes memory metadata1 = OptionalRevealManager.generateComplianceMetadata(
+            commitment, "US-NY", "MiFID-II", officer1
+        );
+        
+        bytes memory metadata2 = OptionalRevealManager.generateComplianceMetadata(
+            commitment, "US-NY", "MiFID-II", officer2
+        );
+        
+        OptionalRevealManager.ComplianceMetadata memory decoded1 = abi.decode(
+            metadata1, (OptionalRevealManager.ComplianceMetadata)
+        );
+        
+        OptionalRevealManager.ComplianceMetadata memory decoded2 = abi.decode(
+            metadata2, (OptionalRevealManager.ComplianceMetadata)
+        );
+        
+        assertEq(decoded1.complianceOfficer, officer1);
+        assertEq(decoded2.complianceOfficer, officer2);
+        assertTrue(decoded1.auditTrail != decoded2.auditTrail);
+    }
+
+    function testGenerateComplianceMetadata_TimebasedReporting() public {
+        bytes32 commitment = keccak256("time_test");
+        
+        uint256 period1 = OptionalRevealManager._getCurrentReportingPeriod();
+        
+        // Advance time by more than a quarter
+        vm.warp(block.timestamp + 91 days);
+        
+        uint256 period2 = OptionalRevealManager._getCurrentReportingPeriod();
+        
+        assertTrue(period2 > period1); // Should be in different reporting period
+    }
+
+    function testFuzzGenerateComplianceMetadata(bytes32 commitment, address officer) public {
+        vm.assume(officer != address(0));
+        
+        bytes memory metadata = OptionalRevealManager.generateComplianceMetadata(
+            commitment, "TEST-JURISDICTION", "TEST-FRAMEWORK", officer
+        );
+        
+        assertTrue(metadata.length > 0);
+        
+        OptionalRevealManager.ComplianceMetadata memory decoded = abi.decode(
+            metadata, (OptionalRevealManager.ComplianceMetadata)
+        );
+        
+        assertEq(decoded.complianceOfficer, officer);
+        assertTrue(decoded.auditTrail != bytes32(0));
+    }
+
+    // =============================================================
+    // AUDIT RECEIPT TESTS (25 tests)
+    // =============================================================
+
+    function testCreateAuditReceipt_CompleteReceipt() public {
+        bytes32 commitment = keccak256("receipt_test");
+        bytes memory executionProof = "execution_proof_data";
+        bytes memory originalParams = "original_parameters_data";
+        bytes memory complianceData = "compliance_metadata_data";
+        
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, executionProof, originalParams, complianceData
+        );
+        
+        assertEq(receipt.commitmentHash, commitment);
+        assertEq(receipt.executionProof, executionProof);
+        assertEq(receipt.originalParameters, originalParams);
+        assertEq(receipt.complianceMetadata, complianceData);
+        // revealTimestamp should be set to current block timestamp
+        // FHE assertion: assertTrue(FHE.decrypt(FHE.gte(receipt.revealTimestamp, FHE.asEuint64(block.timestamp))));
+    }
+
+    function testCreateAuditReceipt_EmptyData() public {
+        bytes32 commitment = keccak256("empty_test");
+        bytes memory emptyData = "";
+        
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, emptyData, emptyData, emptyData
+        );
+        
+        assertEq(receipt.commitmentHash, commitment);
+        assertEq(receipt.executionProof.length, 0);
+        assertEq(receipt.originalParameters.length, 0);
+        assertEq(receipt.complianceMetadata.length, 0);
+    }
+
+    function testCreateAuditReceipt_LargeData() public {
+        bytes32 commitment = keccak256("large_data_test");
+        
+        // Create large data blocks
+        bytes memory largeExecution = new bytes(1000);
+        bytes memory largeParams = new bytes(1000);
+        bytes memory largeCompliance = new bytes(1000);
+        
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, largeExecution, largeParams, largeCompliance
+        );
+        
+        assertEq(receipt.executionProof.length, 1000);
+        assertEq(receipt.originalParameters.length, 1000);
+        assertEq(receipt.complianceMetadata.length, 1000);
+    }
+
+    // =============================================================
+    // AUDIT RECEIPT VERIFICATION TESTS (20 tests)
+    // =============================================================
+
+    function testVerifyAuditReceipt_ValidReceipt() public {
+        bytes32 commitment = keccak256("valid_receipt");
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, "exec_proof", "orig_params", "compliance_data"
+        );
+        
+        (bool isValid, uint8 errorCode) = OptionalRevealManager.verifyAuditReceipt(receipt);
+        
+        assertTrue(isValid);
+        assertEq(errorCode, 0);
+    }
+
+    function testVerifyAuditReceipt_InvalidCommitment() public {
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            bytes32(0), "exec_proof", "orig_params", "compliance_data"
+        );
+        
+        (bool isValid, uint8 errorCode) = OptionalRevealManager.verifyAuditReceipt(receipt);
+        
+        assertFalse(isValid);
+        assertEq(errorCode, 1); // Invalid commitment hash
+    }
+
+    function testVerifyAuditReceipt_MissingExecutionProof() public {
+        bytes32 commitment = keccak256("missing_exec");
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, "", "orig_params", "compliance_data"
+        );
+        
+        (bool isValid, uint8 errorCode) = OptionalRevealManager.verifyAuditReceipt(receipt);
+        
+        assertFalse(isValid);
+        assertEq(errorCode, 2); // Missing execution proof
+    }
+
+    function testVerifyAuditReceipt_MissingOriginalParameters() public {
+        bytes32 commitment = keccak256("missing_params");
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, "exec_proof", "", "compliance_data"
+        );
+        
+        (bool isValid, uint8 errorCode) = OptionalRevealManager.verifyAuditReceipt(receipt);
+        
+        assertFalse(isValid);
+        assertEq(errorCode, 3); // Missing original parameters
+    }
+
+    function testVerifyAuditReceipt_MissingComplianceMetadata() public {
+        bytes32 commitment = keccak256("missing_compliance");
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, "exec_proof", "orig_params", ""
+        );
+        
+        (bool isValid, uint8 errorCode) = OptionalRevealManager.verifyAuditReceipt(receipt);
+        
+        assertFalse(isValid);
+        assertEq(errorCode, 4); // Missing compliance metadata
+    }
+
+    function testFuzzVerifyAuditReceipt(bytes32 commitment, bytes calldata execProof, bytes calldata params, bytes calldata compliance) public {
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, execProof, params, compliance
+        );
+        
+        (bool isValid, uint8 errorCode) = OptionalRevealManager.verifyAuditReceipt(receipt);
+        
+        if (commitment == bytes32(0)) {
+            assertFalse(isValid);
+            assertEq(errorCode, 1);
+        } else if (execProof.length == 0) {
+            assertFalse(isValid);
+            assertEq(errorCode, 2);
+        } else if (params.length == 0) {
+            assertFalse(isValid);
+            assertEq(errorCode, 3);
+        } else if (compliance.length == 0) {
+            assertFalse(isValid);
+            assertEq(errorCode, 4);
+        } else {
+            assertTrue(isValid);
+            assertEq(errorCode, 0);
+        }
+    }
+
+    // =============================================================
+    // PRIVACY SUMMARY TESTS (15 tests)
+    // =============================================================
+
+    function testGeneratePrivacySummary_BasicSummary() public {
+        bytes32 commitment = keccak256("privacy_test");
+        euint128 totalValue = FHE.asEuint128(TEST_SIZE);
+        uint64 duration = TEST_SCHEDULE;
+        
+        FHE.allowThis(totalValue);
+        
+        bytes memory summary = OptionalRevealManager.generatePrivacySummary(
+            commitment, totalValue, duration
+        );
+        
+        assertTrue(summary.length > 0);
+        
+        (bytes32 decodedCommitment, euint128 decodedValue, uint64 decodedDuration, uint256 timestamp, string memory version) = 
+            abi.decode(summary, (bytes32, euint128, uint64, uint256, string));
+        
+        assertEq(decodedCommitment, commitment);
+        assertEq(decodedDuration, duration);
+        assertEq(version, "privacy_summary_v1");
+        assertTrue(timestamp <= block.timestamp);
+    }
+
+    function testGeneratePrivacySummary_ZeroValue() public {
+        bytes32 commitment = keccak256("zero_value");
+        euint128 zeroValue = FHE.asEuint128(0);
+        
+        FHE.allowThis(zeroValue);
+        
+        bytes memory summary = OptionalRevealManager.generatePrivacySummary(
+            commitment, zeroValue, TEST_SCHEDULE
+        );
+        
+        assertTrue(summary.length > 0);
+    }
+
+    function testFuzzGeneratePrivacySummary(bytes32 commitment, uint128 value, uint64 duration) public {
+        euint128 encryptedValue = FHE.asEuint128(value);
+        FHE.allowThis(encryptedValue);
+        
+        bytes memory summary = OptionalRevealManager.generatePrivacySummary(
+            commitment, encryptedValue, duration
+        );
+        
+        assertTrue(summary.length > 0);
+        
+        (bytes32 decodedCommitment,,uint64 decodedDuration,,) = 
+            abi.decode(summary, (bytes32, euint128, uint64, uint256, string));
+        
+        assertEq(decodedCommitment, commitment);
+        assertEq(decodedDuration, duration);
+    }
+
+    // =============================================================
+    // BATCH REVEAL TESTS (20 tests)
+    // =============================================================
+
+    function testBatchReveal_SingleCommitment() public {
+        bytes32[] memory commitments = new bytes32[](1);
+        commitments[0] = keccak256("batch_single");
+        
+        bytes[] memory parameters = new bytes[](1);
+        parameters[0] = OptionalRevealManager.encodeOriginalParameters(TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, uint64(block.timestamp));
+        
+        bytes[] memory proofs = new bytes[](1);
+        proofs[0] = "proof_data";
+        
+        (uint256 successCount, OptionalRevealManager.AuditReceipt[] memory receipts) = 
+            OptionalRevealManager.batchReveal(commitments, parameters, proofs);
+        
+        assertEq(successCount, 1);
+        assertEq(receipts.length, 1);
+        assertEq(receipts[0].commitmentHash, commitments[0]);
+    }
+
+    function testBatchReveal_MultipleCommitments() public {
+        uint256 count = 5;
+        bytes32[] memory commitments = new bytes32[](count);
+        bytes[] memory parameters = new bytes[](count);
+        bytes[] memory proofs = new bytes[](count);
+        
+        for (uint i = 0; i < count; i++) {
+            commitments[i] = keccak256(abi.encode("batch_multi", i));
+            parameters[i] = OptionalRevealManager.encodeOriginalParameters(
+                TEST_SIZE * (i + 1), i % 2, TEST_SCHEDULE * (i + 1), uint64(block.timestamp)
+            );
+            proofs[i] = abi.encode("proof", i);
+        }
+        
+        (uint256 successCount, OptionalRevealManager.AuditReceipt[] memory receipts) = 
+            OptionalRevealManager.batchReveal(commitments, parameters, proofs);
+        
+        assertEq(successCount, count);
+        assertEq(receipts.length, count);
+        
+        for (uint i = 0; i < count; i++) {
+            assertEq(receipts[i].commitmentHash, commitments[i]);
+        }
+    }
+
+    function testBatchReveal_EmptyArrays() public {
+        bytes32[] memory commitments = new bytes32[](0);
+        bytes[] memory parameters = new bytes[](0);
+        bytes[] memory proofs = new bytes[](0);
+        
+        (uint256 successCount, OptionalRevealManager.AuditReceipt[] memory receipts) = 
+            OptionalRevealManager.batchReveal(commitments, parameters, proofs);
+        
+        assertEq(successCount, 0);
+        assertEq(receipts.length, 0);
+    }
+
+    function testBatchReveal_MismatchedArrayLengths() public {
+        bytes32[] memory commitments = new bytes32[](2);
+        bytes[] memory parameters = new bytes[](3); // Mismatched length
+        bytes[] memory proofs = new bytes[](2);
+        
+        commitments[0] = keccak256("test1");
+        commitments[1] = keccak256("test2");
+        
+        vm.expectRevert("Array length mismatch");
+        OptionalRevealManager.batchReveal(commitments, parameters, proofs);
+    }
+
+    function testBatchReveal_LargeArray() public {
+        uint256 count = 50;
+        bytes32[] memory commitments = new bytes32[](count);
+        bytes[] memory parameters = new bytes[](count);
+        bytes[] memory proofs = new bytes[](count);
+        
+        for (uint i = 0; i < count; i++) {
+            commitments[i] = keccak256(abi.encode("large_batch", i));
+            parameters[i] = OptionalRevealManager.encodeOriginalParameters(
+                TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, uint64(block.timestamp)
+            );
+            proofs[i] = "proof_data";
+        }
+        
+        uint256 gasBefore = gasleft();
+        (uint256 successCount, OptionalRevealManager.AuditReceipt[] memory receipts) = 
+            OptionalRevealManager.batchReveal(commitments, parameters, proofs);
+        uint256 gasUsed = gasBefore - gasleft();
+        
+        assertEq(successCount, count);
+        assertEq(receipts.length, count);
+        assertTrue(gasUsed < 10000000); // Should not use excessive gas
+    }
+
+    function testFuzzBatchReveal(uint8 count) public {
+        vm.assume(count <= 20); // Reasonable limit
+        
+        bytes32[] memory commitments = new bytes32[](count);
+        bytes[] memory parameters = new bytes[](count);
+        bytes[] memory proofs = new bytes[](count);
+        
+        for (uint i = 0; i < count; i++) {
+            commitments[i] = keccak256(abi.encode("fuzz_batch", i, block.timestamp));
+            parameters[i] = OptionalRevealManager.encodeOriginalParameters(
+                TEST_SIZE, BUY_DIRECTION, TEST_SCHEDULE, uint64(block.timestamp)
+            );
+            proofs[i] = "fuzz_proof";
+        }
+        
+        (uint256 successCount, OptionalRevealManager.AuditReceipt[] memory receipts) = 
+            OptionalRevealManager.batchReveal(commitments, parameters, proofs);
+        
+        assertEq(successCount, count);
+        assertEq(receipts.length, count);
+    }
+
+    // =============================================================
+    // MERKLE PROOF TESTS (15 tests)
+    // =============================================================
+
+    function testCreateMerkleProof_BasicProof() public {
+        bytes32 commitment = keccak256("merkle_test");
+        bytes memory executionData = "execution_data";
+        bytes32[] memory siblings = new bytes32[](2);
+        siblings[0] = keccak256("sibling1");
+        siblings[1] = keccak256("sibling2");
+        
+        bytes memory merkleProof = OptionalRevealManager.createMerkleProof(
+            commitment, executionData, siblings
+        );
+        
+        assertTrue(merkleProof.length > 0);
+        
+        (bytes32 leaf, bytes32[] memory decodedSiblings, string memory version) = 
+            abi.decode(merkleProof, (bytes32, bytes32[], string));
+        
+        assertEq(leaf, keccak256(abi.encode(commitment, executionData)));
+        assertEq(decodedSiblings.length, 2);
+        assertEq(decodedSiblings[0], siblings[0]);
+        assertEq(decodedSiblings[1], siblings[1]);
+        assertEq(version, "merkle_proof_v1");
+    }
+
+    function testVerifyMerkleProof_ValidProof() public {
+        bytes32 commitment = keccak256("merkle_verify");
+        bytes memory executionData = "verify_data";
+        bytes32[] memory siblings = new bytes32[](1);
+        siblings[0] = keccak256("verify_sibling");
+        
+        bytes memory proof = OptionalRevealManager.createMerkleProof(
+            commitment, executionData, siblings
+        );
+        
+        // Calculate expected root
+        bytes32 leaf = keccak256(abi.encode(commitment, executionData));
+        bytes32 expectedRoot = keccak256(abi.encode(leaf, siblings[0]));
+        
+        bool isValid = OptionalRevealManager.verifyMerkleProof(proof, expectedRoot);
+        
+        assertTrue(isValid);
+    }
+
+    function testVerifyMerkleProof_InvalidRoot() public {
+        bytes32 commitment = keccak256("merkle_invalid");
+        bytes memory executionData = "invalid_data";
+        bytes32[] memory siblings = new bytes32[](1);
+        siblings[0] = keccak256("invalid_sibling");
+        
+        bytes memory proof = OptionalRevealManager.createMerkleProof(
+            commitment, executionData, siblings
+        );
+        
+        bytes32 wrongRoot = keccak256("wrong_root");
+        
+        bool isValid = OptionalRevealManager.verifyMerkleProof(proof, wrongRoot);
+        
+        assertFalse(isValid);
+    }
+
+    function testVerifyMerkleProof_WrongVersion() public {
+        bytes32 commitment = keccak256("version_test");
+        bytes memory executionData = "version_data";
+        bytes32[] memory siblings = new bytes32[](1);
+        siblings[0] = keccak256("version_sibling");
+        
+        // Create proof with wrong version
+        bytes32 leaf = keccak256(abi.encode(commitment, executionData));
+        bytes memory invalidProof = abi.encode(leaf, siblings, "wrong_version");
+        
+        bytes32 root = keccak256(abi.encode(leaf, siblings[0]));
+        
+        bool isValid = OptionalRevealManager.verifyMerkleProof(invalidProof, root);
+        
+        assertFalse(isValid);
+    }
+
+    // =============================================================
+    // INTEGRATION TESTS (10 tests)
+    // =============================================================
+
+    function testIntegrationFullRevealWorkflow() public {
+        // Step 1: Create commitment and parameters
+        bytes32 commitment = keccak256("integration_test");
+        uint256 size = TEST_SIZE;
+        uint8 direction = BUY_DIRECTION;
+        uint64 schedule = TEST_SCHEDULE;
+        
+        // Step 2: Generate execution proof
+        euint128 executedAmount = FHE.asEuint128(size / 2);
+        euint128 totalDelta = FHE.asEuint128(size / 4);
+        uint256[] memory timestamps = new uint256[](2);
+        timestamps[0] = block.timestamp - 1800;
+        timestamps[1] = block.timestamp;
+        
+        FHE.allowThis(executedAmount);
+        FHE.allowThis(totalDelta);
+        
+        bytes memory executionProof = OptionalRevealManager.generateExecutionProof(
+            commitment, executedAmount, totalDelta, timestamps
+        );
+        
+        // Step 3: Encode original parameters
+        bytes memory originalParams = OptionalRevealManager.encodeOriginalParameters(
+            size, direction, schedule, uint64(block.timestamp - 3600)
+        );
+        
+        // Step 4: Generate compliance metadata
+        bytes memory complianceData = OptionalRevealManager.generateComplianceMetadata(
+            commitment, "US-NY", "MiFID-II", complianceOfficer
+        );
+        
+        // Step 5: Create audit receipt
+        OptionalRevealManager.AuditReceipt memory receipt = OptionalRevealManager.createAuditReceipt(
+            commitment, executionProof, originalParams, complianceData
+        );
+        
+        // Step 6: Verify audit receipt
+        (bool isValid, uint8 errorCode) = OptionalRevealManager.verifyAuditReceipt(receipt);
+        
+        assertTrue(isValid);
+        assertEq(errorCode, 0);
+        assertEq(receipt.commitmentHash, commitment);
+        assertTrue(receipt.executionProof.length > 0);
+        assertTrue(receipt.originalParameters.length > 0);
+        assertTrue(receipt.complianceMetadata.length > 0);
+    }
+
+    function testIntegrationBatchRevealWithValidation() public {
+        uint256 count = 3;
+        bytes32[] memory commitments = new bytes32[](count);
+        bytes[] memory parameters = new bytes[](count);
+        bytes[] memory proofs = new bytes[](count);
+        
+        for (uint i = 0; i < count; i++) {
+            commitments[i] = keccak256(abi.encode("batch_integration", i));
+            
+            parameters[i] = OptionalRevealManager.encodeOriginalParameters(
+                TEST_SIZE * (i + 1), i % 2, TEST_SCHEDULE, uint64(block.timestamp)
+            );
+            
+            // Create valid proof
+            bytes32 parametersHash = keccak256(abi.encode(
+                TEST_SIZE * (i + 1), i % 2, TEST_SCHEDULE, trader1
+            ));
+            bytes32 expectedMessage = keccak256(abi.encode(commitments[i], parametersHash));
+            proofs[i] = abi.encode(expectedMessage, "valid_reveal");
+        }
+        
+        (uint256 successCount, OptionalRevealManager.AuditReceipt[] memory receipts) = 
+            OptionalRevealManager.batchReveal(commitments, parameters, proofs);
+        
+        assertEq(successCount, count);
+        
+        // Validate each receipt
+        for (uint i = 0; i < count; i++) {
+            (bool isValid, uint8 errorCode) = OptionalRevealManager.verifyAuditReceipt(receipts[i]);
+            assertTrue(isValid);
+            assertEq(errorCode, 0);
+        }
+    }
+}

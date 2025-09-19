@@ -36,8 +36,8 @@ import {
 import {CoFheTest} from "@fhenixprotocol/cofhe-mock-contracts/CoFheTest.sol";
 
 // Local imports
-import {PhantomTWAMM} from "../src/PhantomTWAMM.sol";
-import {HookMiner} from "./utils/HookMiner.sol";
+import {PhantomTWAMM} from "../../src/PhantomTWAMM.sol";
+import {HookMiner} from "../utils/HookMiner.sol";
 
 /// @notice Mock ERC20 token for testing
 contract MockERC20 is ERC20 {

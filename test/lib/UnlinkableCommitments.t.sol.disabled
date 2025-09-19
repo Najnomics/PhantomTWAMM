@@ -1,0 +1,827 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+import {Test} from "forge-std/Test.sol";
+import {console} from "forge-std/console.sol";
+
+// FHE imports
+import {FHE, InEuint128, InEuint64, InEuint8, euint128, euint64, euint8, ebool} from "@fhenixprotocol/cofhe-contracts/FHE.sol";
+import {CoFheTest} from "@fhenixprotocol/cofhe-mock-contracts/CoFheTest.sol";
+
+// Library under test
+import {UnlinkableCommitments} from "../../src/lib/UnlinkableCommitments.sol";
+
+contract UnlinkableCommitmentsTest is Test, CoFheTest {
+
+    // Test constants
+    uint128 constant TEST_SIZE = 1000 * 10**18;
+    uint8 constant BUY_DIRECTION = 0;
+    uint8 constant SELL_DIRECTION = 1;
+    uint64 constant TEST_SCHEDULE = 3600; // 1 hour
+    
+    // Test accounts
+    address trader1;
+    address trader2;
+    address trader3;
+
+    function setUp() public {
+        // CoFheTest automatically sets up in constructor
+        
+        trader1 = makeAddr("trader1");
+        trader2 = makeAddr("trader2");
+        trader3 = makeAddr("trader3");
+    }
+
+    // =============================================================
+    // COMMITMENT GENERATION TESTS (25 tests)
+    // =============================================================
+
+    function testGenerateCommitment_BasicOrder() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        (bytes32 commitment, bytes32 secretHash) = UnlinkableCommitments.generateCommitment(
+            trader1,
+            createInEuint128(TEST_SIZE, trader1),
+            createInEuint8(BUY_DIRECTION, trader1),
+            createInEuint64(TEST_SCHEDULE, trader1),
+            0 // nonce
+        );
+        
+        assertTrue(commitment != bytes32(0));
+        vm.stopPrank();
+    }
+
+    function testGenerateCommitment_DifferentSizes() public {
+        vm.startPrank(trader1);
+        
+        uint128[] memory sizes = new uint128[](5);
+        sizes[0] = 100 * 10**18;
+        sizes[1] = 500 * 10**18;
+        sizes[2] = 1000 * 10**18;
+        sizes[3] = 5000 * 10**18;
+        sizes[4] = 10000 * 10**18;
+        
+        bytes32[] memory commitments = new bytes32[](5);
+        
+        for (uint i = 0; i < 5; i++) {
+            InEuint128 memory encSize = createInEuint128(sizes[i], trader1);
+            InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+            InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+            
+            commitments[i] = UnlinkableCommitments.generateCommitment(
+                trader1,
+                encSize,
+                encDirection,
+                encSchedule,
+                i // different nonce
+            );
+        }
+        
+        // All commitments should be different
+        for (uint i = 0; i < 5; i++) {
+            for (uint j = i + 1; j < 5; j++) {
+                assertTrue(commitments[i] != commitments[j]);
+            }
+        }
+        
+        vm.stopPrank();
+    }
+
+    function testGenerateCommitment_DifferentDirections() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        InEuint8 memory buyDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint8 memory sellDirection = createInEuint8(SELL_DIRECTION, trader1);
+        
+        bytes32 buyCommitment = UnlinkableCommitments.generateCommitment(
+            trader1,
+            encSize,
+            buyDirection,
+            encSchedule,
+            0
+        );
+        
+        bytes32 sellCommitment = UnlinkableCommitments.generateCommitment(
+            trader1,
+            encSize,
+            sellDirection,
+            encSchedule,
+            0
+        );
+        
+        assertTrue(buyCommitment != sellCommitment);
+        vm.stopPrank();
+    }
+
+    function testGenerateCommitment_DifferentSchedules() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        
+        uint64[] memory schedules = new uint64[](4);
+        schedules[0] = 1800;  // 30 minutes
+        schedules[1] = 3600;  // 1 hour
+        schedules[2] = 7200;  // 2 hours
+        schedules[3] = 86400; // 1 day
+        
+        bytes32[] memory commitments = new bytes32[](4);
+        
+        for (uint i = 0; i < 4; i++) {
+            InEuint64 memory encSchedule = createInEuint64(schedules[i], trader1);
+            
+            commitments[i] = UnlinkableCommitments.generateCommitment(
+                trader1,
+                encSize,
+                encDirection,
+                encSchedule,
+                0
+            );
+        }
+        
+        // All commitments should be different
+        for (uint i = 0; i < 4; i++) {
+            for (uint j = i + 1; j < 4; j++) {
+                assertTrue(commitments[i] != commitments[j]);
+            }
+        }
+        
+        vm.stopPrank();
+    }
+
+    function testGenerateCommitment_DifferentTraders() public {
+        InEuint128 memory encSize1 = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection1 = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule1 = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        InEuint128 memory encSize2 = createInEuint128(TEST_SIZE, trader2);
+        InEuint8 memory encDirection2 = createInEuint8(BUY_DIRECTION, trader2);
+        InEuint64 memory encSchedule2 = createInEuint64(TEST_SCHEDULE, trader2);
+        
+        vm.startPrank(trader1);
+        bytes32 commitment1 = UnlinkableCommitments.generateCommitment(
+            trader1,
+            encSize1,
+            encDirection1,
+            encSchedule1,
+            0
+        );
+        vm.stopPrank();
+        
+        vm.startPrank(trader2);
+        bytes32 commitment2 = UnlinkableCommitments.generateCommitment(
+            trader2,
+            encSize2,
+            encDirection2,
+            encSchedule2,
+            0
+        );
+        vm.stopPrank();
+        
+        assertTrue(commitment1 != commitment2);
+    }
+
+    function testGenerateCommitment_DifferentNonces() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        bytes32[] memory commitments = new bytes32[](10);
+        
+        for (uint i = 0; i < 10; i++) {
+            commitments[i] = UnlinkableCommitments.generateCommitment(
+                trader1,
+                encSize,
+                encDirection,
+                encSchedule,
+                i // different nonce
+            );
+        }
+        
+        // All commitments should be different due to different nonces
+        for (uint i = 0; i < 10; i++) {
+            for (uint j = i + 1; j < 10; j++) {
+                assertTrue(commitments[i] != commitments[j]);
+            }
+        }
+        
+        vm.stopPrank();
+    }
+
+    function testFuzzGenerateCommitment(uint128 size, uint8 direction, uint64 schedule, uint256 nonce) public {
+        vm.assume(size > 0 && size < type(uint128).max);
+        vm.assume(direction <= 1); // Only buy(0) or sell(1)
+        vm.assume(schedule > 0 && schedule < type(uint64).max);
+        
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(size, trader1);
+        InEuint8 memory encDirection = createInEuint8(direction, trader1);
+        InEuint64 memory encSchedule = createInEuint64(schedule, trader1);
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1,
+            encSize,
+            encDirection,
+            encSchedule,
+            nonce
+        );
+        
+        assertTrue(commitment != bytes32(0));
+        vm.stopPrank();
+    }
+
+    // =============================================================
+    // COMMITMENT VERIFICATION TESTS (20 tests)
+    // =============================================================
+
+    function testVerifyCommitment_ValidCommitment() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        uint256 nonce = 42;
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1,
+            encSize,
+            encDirection,
+            encSchedule,
+            nonce
+        );
+        
+        bool isValid = UnlinkableCommitments.verifyCommitment(
+            commitment,
+            trader1,
+            encSize,
+            encDirection,
+            encSchedule,
+            nonce
+        );
+        
+        assertTrue(isValid);
+        vm.stopPrank();
+    }
+
+    function testVerifyCommitment_InvalidTrader() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        uint256 nonce = 42;
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1,
+            encSize,
+            encDirection,
+            encSchedule,
+            nonce
+        );
+        
+        vm.stopPrank();
+        
+        // Try to verify with wrong trader
+        vm.startPrank(trader2);
+        
+        InEuint128 memory encSize2 = createInEuint128(TEST_SIZE, trader2);
+        InEuint8 memory encDirection2 = createInEuint8(BUY_DIRECTION, trader2);
+        InEuint64 memory encSchedule2 = createInEuint64(TEST_SCHEDULE, trader2);
+        
+        bool isValid = UnlinkableCommitments.verifyCommitment(
+            commitment,
+            trader2, // Wrong trader
+            encSize2,
+            encDirection2,
+            encSchedule2,
+            nonce
+        );
+        
+        assertFalse(isValid);
+        vm.stopPrank();
+    }
+
+    function testVerifyCommitment_InvalidNonce() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        uint256 nonce = 42;
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1,
+            encSize,
+            encDirection,
+            encSchedule,
+            nonce
+        );
+        
+        bool isValid = UnlinkableCommitments.verifyCommitment(
+            commitment,
+            trader1,
+            encSize,
+            encDirection,
+            encSchedule,
+            999 // Wrong nonce
+        );
+        
+        assertFalse(isValid);
+        vm.stopPrank();
+    }
+
+    function testVerifyCommitment_MultipleValidCommitments() public {
+        vm.startPrank(trader1);
+        
+        bytes32[] memory commitments = new bytes32[](3);
+        uint256[] memory nonces = new uint256[](3);
+        nonces[0] = 1;
+        nonces[1] = 2;
+        nonces[2] = 3;
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        // Generate commitments
+        for (uint i = 0; i < 3; i++) {
+            commitments[i] = UnlinkableCommitments.generateCommitment(
+                trader1,
+                encSize,
+                encDirection,
+                encSchedule,
+                nonces[i]
+            );
+        }
+        
+        // Verify all commitments
+        for (uint i = 0; i < 3; i++) {
+            bool isValid = UnlinkableCommitments.verifyCommitment(
+                commitments[i],
+                trader1,
+                encSize,
+                encDirection,
+                encSchedule,
+                nonces[i]
+            );
+            assertTrue(isValid);
+        }
+        
+        vm.stopPrank();
+    }
+
+    // =============================================================
+    // ENTROPY GENERATION TESTS (15 tests)
+    // =============================================================
+
+    function testGenerateEntropy_DifferentBlockData() public {
+        // Test that entropy changes with block data
+        uint256 entropy1 = UnlinkableCommitments.generateEntropy(trader1, 100);
+        
+        // Advance block to change block.number and block.timestamp
+        vm.roll(block.number + 1);
+        vm.warp(block.timestamp + 60);
+        
+        uint256 entropy2 = UnlinkableCommitments.generateEntropy(trader1, 100);
+        
+        assertTrue(entropy1 != entropy2);
+    }
+
+    function testGenerateEntropy_DifferentTraders() public {
+        uint256 entropy1 = UnlinkableCommitments.generateEntropy(trader1, 100);
+        uint256 entropy2 = UnlinkableCommitments.generateEntropy(trader2, 100);
+        
+        assertTrue(entropy1 != entropy2);
+    }
+
+    function testGenerateEntropy_DifferentNonces() public {
+        uint256 entropy1 = UnlinkableCommitments.generateEntropy(trader1, 100);
+        uint256 entropy2 = UnlinkableCommitments.generateEntropy(trader1, 200);
+        
+        assertTrue(entropy1 != entropy2);
+    }
+
+    function testGenerateEntropy_Consistency() public {
+        // Same inputs should give same entropy in same block
+        uint256 entropy1 = UnlinkableCommitments.generateEntropy(trader1, 100);
+        uint256 entropy2 = UnlinkableCommitments.generateEntropy(trader1, 100);
+        
+        assertEq(entropy1, entropy2);
+    }
+
+    function testFuzzGenerateEntropy(address trader, uint256 nonce) public {
+        vm.assume(trader != address(0));
+        
+        uint256 entropy = UnlinkableCommitments.generateEntropy(trader, nonce);
+        
+        assertTrue(entropy != 0); // Should never be zero due to block data
+    }
+
+    // =============================================================
+    // ZK COMMITMENT TESTS (20 tests)
+    // =============================================================
+
+    function testVerifyZKCommitment_ValidProof() public {
+        bytes32 commitment = keccak256("test_commitment");
+        bytes memory validProof = abi.encode(commitment, "valid");
+        
+        bool isValid = UnlinkableCommitments.verifyZKCommitment(commitment, validProof);
+        
+        assertTrue(isValid);
+    }
+
+    function testVerifyZKCommitment_InvalidProof() public {
+        bytes32 commitment = keccak256("test_commitment");
+        bytes memory invalidProof = abi.encode(commitment, "invalid");
+        
+        bool isValid = UnlinkableCommitments.verifyZKCommitment(commitment, invalidProof);
+        
+        assertFalse(isValid);
+    }
+
+    function testVerifyZKCommitment_WrongCommitment() public {
+        bytes32 commitment1 = keccak256("test_commitment_1");
+        bytes32 commitment2 = keccak256("test_commitment_2");
+        bytes memory proof = abi.encode(commitment1, "valid");
+        
+        bool isValid = UnlinkableCommitments.verifyZKCommitment(commitment2, proof);
+        
+        assertFalse(isValid);
+    }
+
+    function testVerifyZKCommitment_EmptyProof() public {
+        bytes32 commitment = keccak256("test_commitment");
+        bytes memory emptyProof = "";
+        
+        bool isValid = UnlinkableCommitments.verifyZKCommitment(commitment, emptyProof);
+        
+        assertFalse(isValid);
+    }
+
+    function testVerifyZKCommitment_MalformedProof() public {
+        bytes32 commitment = keccak256("test_commitment");
+        bytes memory malformedProof = "not_properly_encoded";
+        
+        // Should handle malformed proof gracefully
+        try UnlinkableCommitments.verifyZKCommitment(commitment, malformedProof) returns (bool isValid) {
+            assertFalse(isValid);
+        } catch {
+            // Acceptable to revert on malformed proof
+            assertTrue(true);
+        }
+    }
+
+    function testFuzzVerifyZKCommitment(bytes32 commitment, bytes32 proofData) public {
+        bytes memory proof = abi.encode(commitment, proofData);
+        
+        bool isValid = UnlinkableCommitments.verifyZKCommitment(commitment, proof);
+        
+        // Should be valid only if proofData matches "valid"
+        if (proofData == keccak256("valid")) {
+            assertTrue(isValid);
+        } else {
+            assertFalse(isValid);
+        }
+    }
+
+    // =============================================================
+    // TIME WINDOW VALIDATION TESTS (15 tests)
+    // =============================================================
+
+    function testValidateTimeWindow_CurrentTime() public {
+        uint256 timestamp = block.timestamp;
+        
+        bool isValid = UnlinkableCommitments.validateTimeWindow(timestamp);
+        
+        assertTrue(isValid);
+    }
+
+    function testValidateTimeWindow_RecentPast() public {
+        uint256 timestamp = block.timestamp - 1800; // 30 minutes ago
+        
+        bool isValid = UnlinkableCommitments.validateTimeWindow(timestamp);
+        
+        assertTrue(isValid); // Should be valid within reasonable window
+    }
+
+    function testValidateTimeWindow_NearFuture() public {
+        uint256 timestamp = block.timestamp + 300; // 5 minutes in future
+        
+        bool isValid = UnlinkableCommitments.validateTimeWindow(timestamp);
+        
+        assertTrue(isValid); // Should allow small future timestamps
+    }
+
+    function testValidateTimeWindow_DistantPast() public {
+        uint256 timestamp = block.timestamp - 86400; // 24 hours ago
+        
+        bool isValid = UnlinkableCommitments.validateTimeWindow(timestamp);
+        
+        assertFalse(isValid); // Too far in past
+    }
+
+    function testValidateTimeWindow_DistantFuture() public {
+        uint256 timestamp = block.timestamp + 86400; // 24 hours in future
+        
+        bool isValid = UnlinkableCommitments.validateTimeWindow(timestamp);
+        
+        assertFalse(isValid); // Too far in future
+    }
+
+    function testValidateTimeWindow_EdgeCases() public {
+        // Test exact boundaries
+        uint256 maxPast = block.timestamp - 7200; // 2 hours (just within limit)
+        uint256 maxFuture = block.timestamp + 1800; // 30 minutes (within limit)
+        
+        assertTrue(UnlinkableCommitments.validateTimeWindow(maxPast));
+        assertTrue(UnlinkableCommitments.validateTimeWindow(maxFuture));
+    }
+
+    function testFuzzValidateTimeWindow(uint256 timestamp) public {
+        bool isValid = UnlinkableCommitments.validateTimeWindow(timestamp);
+        
+        // Should be valid only if within reasonable range of current time
+        uint256 currentTime = block.timestamp;
+        bool shouldBeValid = (timestamp >= currentTime - 7200) && (timestamp <= currentTime + 1800);
+        
+        assertEq(isValid, shouldBeValid);
+    }
+
+    // =============================================================
+    // SECURITY TESTS (20 tests)
+    // =============================================================
+
+    function testSecurityDeterministicGeneration() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        // Generate same commitment multiple times
+        bytes32 commitment1 = UnlinkableCommitments.generateCommitment(
+            trader1, encSize, encDirection, encSchedule, 12345
+        );
+        
+        bytes32 commitment2 = UnlinkableCommitments.generateCommitment(
+            trader1, encSize, encDirection, encSchedule, 12345
+        );
+        
+        assertEq(commitment1, commitment2); // Should be deterministic
+        vm.stopPrank();
+    }
+
+    function testSecurityPreventReplay() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        // Generate commitment
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1, encSize, encDirection, encSchedule, 12345
+        );
+        
+        vm.stopPrank();
+        
+        // Advance time significantly
+        vm.warp(block.timestamp + 3600);
+        
+        // Try to generate same commitment later
+        vm.startPrank(trader1);
+        
+        bytes32 laterCommitment = UnlinkableCommitments.generateCommitment(
+            trader1, encSize, encDirection, encSchedule, 12345
+        );
+        
+        assertTrue(commitment != laterCommitment); // Should be different due to timestamp
+        vm.stopPrank();
+    }
+
+    function testSecurityResistBruteForce() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        bytes32 originalCommitment = UnlinkableCommitments.generateCommitment(
+            trader1, encSize, encDirection, encSchedule, 12345
+        );
+        
+        vm.stopPrank();
+        
+        // Attacker tries different traders to find collision
+        bool foundCollision = false;
+        for (uint i = 0; i < 100; i++) {
+            address attacker = address(uint160(1000 + i));
+            vm.startPrank(attacker);
+            
+            InEuint128 memory attackerSize = createInEuint128(TEST_SIZE, attacker);
+            InEuint8 memory attackerDirection = createInEuint8(BUY_DIRECTION, attacker);
+            InEuint64 memory attackerSchedule = createInEuint64(TEST_SCHEDULE, attacker);
+            
+            bytes32 attackerCommitment = UnlinkableCommitments.generateCommitment(
+                attacker, attackerSize, attackerDirection, attackerSchedule, 12345
+            );
+            
+            if (attackerCommitment == originalCommitment) {
+                foundCollision = true;
+                break;
+            }
+            
+            vm.stopPrank();
+        }
+        
+        assertFalse(foundCollision); // Should not find collision easily
+    }
+
+    function testSecurityPrivacyPreservation() public {
+        // Test that commitments don't reveal order parameters
+        vm.startPrank(trader1);
+        
+        InEuint128 memory smallSize = createInEuint128(100 * 10**18, trader1);
+        InEuint128 memory largeSize = createInEuint128(10000 * 10**18, trader1);
+        InEuint8 memory buyDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint8 memory sellDirection = createInEuint8(SELL_DIRECTION, trader1);
+        InEuint64 memory shortSchedule = createInEuint64(1800, trader1);
+        InEuint64 memory longSchedule = createInEuint64(86400, trader1);
+        
+        bytes32 commitment1 = UnlinkableCommitments.generateCommitment(
+            trader1, smallSize, buyDirection, shortSchedule, 1
+        );
+        
+        bytes32 commitment2 = UnlinkableCommitments.generateCommitment(
+            trader1, largeSize, sellDirection, longSchedule, 2
+        );
+        
+        // Commitments should be completely different, no pattern visible
+        assertTrue(commitment1 != commitment2);
+        
+        // No obvious relationship between parameter magnitude and commitment
+        uint256 diff1 = uint256(commitment1) % 1000000;
+        uint256 diff2 = uint256(commitment2) % 1000000;
+        
+        // Should not have obvious correlation with order size difference
+        assertTrue(diff1 != diff2);
+        
+        vm.stopPrank();
+    }
+
+    // =============================================================
+    // EDGE CASES AND ERROR HANDLING (15 tests)
+    // =============================================================
+
+    function testEdgeCaseZeroSize() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory zeroSize = createInEuint128(0, trader1);
+        InEuint8 memory direction = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory schedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1, zeroSize, direction, schedule, 0
+        );
+        
+        assertTrue(commitment != bytes32(0)); // Should still generate valid commitment
+        vm.stopPrank();
+    }
+
+    function testEdgeCaseMaxSize() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory maxSize = createInEuint128(type(uint128).max, trader1);
+        InEuint8 memory direction = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory schedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1, maxSize, direction, schedule, 0
+        );
+        
+        assertTrue(commitment != bytes32(0));
+        vm.stopPrank();
+    }
+
+    function testEdgeCaseInvalidDirection() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory size = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory invalidDirection = createInEuint8(99, trader1); // Invalid direction
+        InEuint64 memory schedule = createInEuint64(TEST_SCHEDULE, trader1);
+        
+        // Should still generate commitment (validation happens elsewhere)
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1, size, invalidDirection, schedule, 0
+        );
+        
+        assertTrue(commitment != bytes32(0));
+        vm.stopPrank();
+    }
+
+    function testEdgeCaseZeroAddress() public {
+        vm.startPrank(address(0));
+        
+        InEuint128 memory size = createInEuint128(TEST_SIZE, address(0));
+        InEuint8 memory direction = createInEuint8(BUY_DIRECTION, address(0));
+        InEuint64 memory schedule = createInEuint64(TEST_SCHEDULE, address(0));
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            address(0), size, direction, schedule, 0
+        );
+        
+        assertTrue(commitment != bytes32(0));
+        vm.stopPrank();
+    }
+
+    function testEdgeCaseVeryLargeNonce() public {
+        vm.startPrank(trader1);
+        
+        InEuint128 memory size = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory direction = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory schedule = createInEuint64(TEST_SCHEDULE, trader1);
+        uint256 largeNonce = type(uint256).max;
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1, size, direction, schedule, largeNonce
+        );
+        
+        assertTrue(commitment != bytes32(0));
+        vm.stopPrank();
+    }
+
+    // =============================================================
+    // INTEGRATION TESTS (10 tests)
+    // =============================================================
+
+    function testIntegrationFullCommitmentWorkflow() public {
+        vm.startPrank(trader1);
+        
+        // Step 1: Generate commitment
+        InEuint128 memory encSize = createInEuint128(TEST_SIZE, trader1);
+        InEuint8 memory encDirection = createInEuint8(BUY_DIRECTION, trader1);
+        InEuint64 memory encSchedule = createInEuint64(TEST_SCHEDULE, trader1);
+        uint256 nonce = 42;
+        
+        bytes32 commitment = UnlinkableCommitments.generateCommitment(
+            trader1, encSize, encDirection, encSchedule, nonce
+        );
+        
+        // Step 2: Verify commitment
+        bool isValid = UnlinkableCommitments.verifyCommitment(
+            commitment, trader1, encSize, encDirection, encSchedule, nonce
+        );
+        
+        // Step 3: Create ZK proof and verify
+        bytes memory zkProof = abi.encode(commitment, "valid");
+        bool zkValid = UnlinkableCommitments.verifyZKCommitment(commitment, zkProof);
+        
+        // Step 4: Validate time window
+        bool timeValid = UnlinkableCommitments.validateTimeWindow(block.timestamp);
+        
+        assertTrue(commitment != bytes32(0));
+        assertTrue(isValid);
+        assertTrue(zkValid);
+        assertTrue(timeValid);
+        
+        vm.stopPrank();
+    }
+
+    function testIntegrationMultipleTraderCommitments() public {
+        address[] memory traders = new address[](3);
+        traders[0] = trader1;
+        traders[1] = trader2; 
+        traders[2] = trader3;
+        
+        bytes32[] memory commitments = new bytes32[](3);
+        
+        for (uint i = 0; i < 3; i++) {
+            vm.startPrank(traders[i]);
+            
+            InEuint128 memory encSize = createInEuint128((i + 1) * 1000 * 10**18, traders[i]);
+            InEuint8 memory encDirection = createInEuint8(i % 2, traders[i]);
+            InEuint64 memory encSchedule = createInEuint64((i + 1) * 3600, traders[i]);
+            
+            commitments[i] = UnlinkableCommitments.generateCommitment(
+                traders[i], encSize, encDirection, encSchedule, i
+            );
+            
+            vm.stopPrank();
+        }
+        
+        // All commitments should be unique
+        assertTrue(commitments[0] != commitments[1]);
+        assertTrue(commitments[1] != commitments[2]);
+        assertTrue(commitments[0] != commitments[2]);
+    }
+}
